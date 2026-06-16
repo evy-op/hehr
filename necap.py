@@ -1,6 +1,6 @@
 """
-NECaptcha Solver - Railway Edition with CN31 Solver Integration
-Uses the yidun_proxyless.py solver engine
+CN31 Solver - Direct Railway Deployment
+Runs yidun_proxyless.py with Flask API wrapper
 """
 
 import os
@@ -9,209 +9,247 @@ import time
 import json
 import threading
 import logging
-import warnings
 from datetime import datetime
 from flask import Flask, jsonify, request
-import requests
-
-# Suppress warnings
-warnings.filterwarnings('ignore')
+from flask_cors import CORS
 
 app = Flask(__name__)
-
-# Global state
-tokens = []
-token_lock = threading.Lock()
-generation_running = False
-generation_stats = {"status": "idle", "generated": 0, "total": 0}
-solver_threads = []
+CORS(app)
 
 # Import the CN31 solver
 try:
-    from yidun_proxyless import Dun163, initialize_global_model, TOKEN_OUTPUT_FILE
+    from yidun_proxyless import main, worker_thread, initialize_global_model, TOKEN_OUTPUT_FILE
+    import yidun_proxyless as solver
     SOLVER_AVAILABLE = True
     print("✅ CN31 Solver loaded successfully")
 except ImportError as e:
     SOLVER_AVAILABLE = False
     print(f"❌ CN31 Solver not available: {e}")
 
-# Configuration
-ID = "fef5c67c39074e9d845f4bf579cc07af"
-REFERER = "https://mtacc.mobilelegends.com/"
-FP_H = "mtacc.mobilelegends.com"
+# Global state
+solver_running = False
+solver_thread = None
+generation_stats = {
+    "status": "idle",
+    "tokens_generated": 0,
+    "start_time": None,
+    "threads": 0
+}
 
-def run_solver_worker(thread_id, num_tokens=10):
-    """Run the CN31 solver to generate tokens"""
-    global generation_stats, tokens
+# Token storage
+tokens_cache = []
+token_lock = threading.Lock()
+TOKEN_FILE = "/app/validated_tokens.txt"
+
+def read_tokens_from_file():
+    """Read tokens from the validated_tokens.txt file"""
+    try:
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, 'r') as f:
+                lines = f.readlines()
+                return [line.strip() for line in lines if line.strip()]
+        return []
+    except Exception as e:
+        print(f"Error reading tokens: {e}")
+        return []
+
+def get_new_tokens():
+    """Get new tokens from file and add to cache"""
+    global tokens_cache
     
     try:
-        # Initialize the solver
-        import random
-        from fake_useragent import UserAgent
+        current_tokens = set(tokens_cache)
+        file_tokens = set(read_tokens_from_file())
+        new_tokens = file_tokens - current_tokens
         
-        ua = UserAgent().random
+        if new_tokens:
+            with token_lock:
+                tokens_cache.extend(list(new_tokens))
+                generation_stats["tokens_generated"] = len(tokens_cache)
+            print(f"✅ Added {len(new_tokens)} new tokens. Total: {len(tokens_cache)}")
         
-        dun = Dun163(
-            id_=ID,
-            referer=REFERER,
-            fp_h=FP_H,
-            ua=ua,
-            thread_id=thread_id
-        )
-        
-        success_count = 0
-        
-        while generation_running and success_count < num_tokens:
-            try:
-                # Run one solve attempt
-                success = dun.run()
-                
-                if success:
-                    # Get the token from the file or from the solver
-                    # The solver saves to file, we'll read it
-                    with open(TOKEN_OUTPUT_FILE, 'r') as f:
-                        lines = f.readlines()
-                        if lines:
-                            latest_token = lines[-1].strip()
-                            if latest_token:
-                                with token_lock:
-                                    tokens.append(latest_token)
-                                    generation_stats["generated"] += 1
-                                    generation_stats["total"] = len(tokens)
-                                success_count += 1
-                                print(f"[T{thread_id}] ✅ Token #{success_count}: {latest_token[:40]}...")
-                
-                time.sleep(random.uniform(0.5, 1.5))
-                
-            except Exception as e:
-                print(f"[T{thread_id}] Error: {e}")
-                time.sleep(2)
-                
+        return list(new_tokens)
     except Exception as e:
-        print(f"[T{thread_id}] Worker error: {e}")
+        print(f"Error getting new tokens: {e}")
+        return []
 
-# Flask Routes
+def run_solver_worker(threads=5):
+    """Run the yidun_proxyless.py main function"""
+    global solver_running, generation_stats
+    
+    print(f"🚀 Starting CN31 solver with {threads} threads...")
+    generation_stats["status"] = "running"
+    generation_stats["start_time"] = datetime.now().isoformat()
+    generation_stats["threads"] = threads
+    
+    # Modify the NUM_THREADS in the solver
+    solver.NUM_THREADS = threads
+    
+    try:
+        # Run the main solver (this runs forever)
+        solver.main()
+    except KeyboardInterrupt:
+        print("⏹️ Solver stopped by user")
+    except Exception as e:
+        print(f"❌ Solver error: {e}")
+        generation_stats["status"] = "error"
+        generation_stats["error"] = str(e)
+    finally:
+        solver_running = False
+        generation_stats["status"] = "stopped"
+
 @app.route('/')
 def status():
+    """Get solver status"""
+    # Check for new tokens
+    get_new_tokens()
+    
     return jsonify({
         "status": generation_stats["status"],
-        "generated": generation_stats["generated"],
-        "total": generation_stats["total"],
+        "tokens_generated": generation_stats["tokens_generated"],
+        "tokens_in_queue": len(tokens_cache),
+        "threads": generation_stats["threads"],
+        "start_time": generation_stats.get("start_time"),
         "solver_available": SOLVER_AVAILABLE,
-        "tokens_in_queue": len(tokens)
+        "uptime": generation_stats.get("uptime", 0)
     })
 
 @app.route('/health')
 def health():
+    """Health check"""
     return jsonify({
         "ok": True,
         "solver_available": SOLVER_AVAILABLE,
-        "status": generation_stats["status"]
+        "status": generation_stats["status"],
+        "tokens_available": len(tokens_cache)
     })
 
 @app.route('/start', methods=['POST'])
-def start_generation():
-    global generation_running, generation_stats, solver_threads
+def start_solver():
+    """Start the CN31 solver"""
+    global solver_running, solver_thread, generation_stats
     
-    if generation_running:
-        return jsonify({"error": "Already running"}), 400
+    if solver_running:
+        return jsonify({"error": "Solver already running"}), 400
     
     if not SOLVER_AVAILABLE:
         return jsonify({"error": "CN31 Solver not available"}), 500
     
     data = request.json or {}
-    threads = min(data.get("threads", 2), 5)
-    num_tokens = data.get("num_tokens", 50)
+    threads = min(data.get("threads", 5), 10)  # Max 10 threads
     
     # Initialize model first
     try:
-        from yidun_proxyless import initialize_global_model
         model = initialize_global_model()
-        if not model:
+        if model is None:
             return jsonify({"error": "Failed to load model"}), 500
     except Exception as e:
         return jsonify({"error": f"Model error: {e}"}), 500
     
-    generation_running = True
-    generation_stats["status"] = "running"
-    generation_stats["generated"] = 0
+    solver_running = True
+    generation_stats["status"] = "starting"
+    generation_stats["threads"] = threads
     
-    # Start workers
-    solver_threads = []
-    for i in range(threads):
-        t = threading.Thread(
-            target=run_solver_worker, 
-            args=(i+1, num_tokens // threads + 1),
-            daemon=True
-        )
-        solver_threads.append(t)
-        t.start()
+    # Start solver in background thread
+    solver_thread = threading.Thread(
+        target=run_solver_worker,
+        args=(threads,),
+        daemon=False
+    )
+    solver_thread.start()
     
     return jsonify({
-        "message": "Generation started",
+        "message": "CN31 Solver started",
         "threads": threads,
-        "num_tokens": num_tokens
+        "status": "running"
     })
 
 @app.route('/stop', methods=['POST'])
-def stop_generation():
-    global generation_running, generation_stats
-    generation_running = False
-    generation_stats["status"] = "idle"
-    return jsonify({"message": "Stop signal sent"})
+def stop_solver():
+    """Stop the CN31 solver"""
+    global solver_running
+    
+    solver_running = False
+    generation_stats["status"] = "stopping"
+    
+    return jsonify({
+        "message": "Stop signal sent",
+        "tokens_generated": generation_stats["tokens_generated"]
+    })
 
 @app.route('/api/get-token', methods=['GET'])
 def get_token():
+    """Get a single token"""
+    global tokens_cache
+    
+    # Check for new tokens
+    get_new_tokens()
+    
     with token_lock:
-        if tokens:
-            token = tokens.pop(0)
+        if tokens_cache:
+            token = tokens_cache.pop(0)
             return jsonify({
                 "token": token,
-                "remaining": len(tokens)
+                "remaining": len(tokens_cache)
             })
-    return jsonify({"error": "No tokens"}), 404
+    
+    return jsonify({"error": "No tokens available"}), 404
 
 @app.route('/api/tokens', methods=['GET'])
 def get_tokens():
+    """Get multiple tokens"""
+    global tokens_cache
+    
     n = request.args.get('n', 5, type=int)
     n = min(n, 50)
     
+    # Check for new tokens
+    get_new_tokens()
+    
     with token_lock:
-        count = min(n, len(tokens))
-        result = tokens[:count]
-        # Remove retrieved tokens
-        for _ in range(count):
-            if tokens:
-                tokens.pop(0)
+        count = min(n, len(tokens_cache))
+        result = tokens_cache[:count]
+        tokens_cache = tokens_cache[count:]
         
         return jsonify({
             "tokens": result,
             "count": len(result),
-            "remaining": len(tokens)
+            "remaining": len(tokens_cache)
         })
 
-@app.route('/api/status', methods=['GET'])
-def api_status():
-    return status()
+@app.route('/api/token-count', methods=['GET'])
+def token_count():
+    """Get token count"""
+    get_new_tokens()
+    return jsonify({
+        "total_generated": generation_stats["tokens_generated"],
+        "available": len(tokens_cache)
+    })
+
+@app.route('/api/tokens/export', methods=['GET'])
+def export_tokens():
+    """Export all tokens"""
+    get_new_tokens()
+    
+    with token_lock:
+        tokens = tokens_cache.copy()
+        tokens_cache = []
+    
+    return jsonify({
+        "tokens": tokens,
+        "count": len(tokens)
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 6000))
     
-    # Initialize model on startup
-    if SOLVER_AVAILABLE:
-        try:
-            from yidun_proxyless import initialize_global_model
-            initialize_global_model()
-            print("✅ Model initialized")
-        except Exception as e:
-            print(f"❌ Model initialization failed: {e}")
-    
     print(f"""
-🔐 NECaptcha CN31 Solver - Railway Edition
+🔐 CN31 Solver - Direct Railway Edition
 ─────────────────────────────────────────
 Port       : {port}
 Solver     : {'✅ Available' if SOLVER_AVAILABLE else '❌ Not Available'}
-Model      : {'✅ Loaded' if SOLVER_AVAILABLE else '❌ Not Loaded'}
+Threads    : Configurable (max 10)
+Output     : {TOKEN_FILE}
 """)
     
     app.run(host='0.0.0.0', port=port, debug=False)

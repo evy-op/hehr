@@ -1,6 +1,6 @@
 FROM python:3.11-slim-bullseye
 
-# Install system dependencies FIRST (including curl)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 18.x using the official script
+# Install Node.js for execjs
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs
 
@@ -46,7 +46,7 @@ RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+') \
 
 WORKDIR /app
 
-# Copy requirements first for better caching
+# Copy requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -62,11 +62,10 @@ RUN chmod +x start.sh
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV HEADLESS=true
-ENV NUM_BROWSERS=2
-ENV MAX_THREADS=2
+ENV NUM_THREADS=5
+ENV PORT=6000
 ENV CHROME_BIN=/usr/bin/google-chrome
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
-ENV PORT=6000
 
 EXPOSE 6000
 
