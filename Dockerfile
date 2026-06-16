@@ -1,6 +1,6 @@
 FROM python:3.11-slim-bullseye
 
-# Install dependencies - FIXED without apt-key
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -20,20 +20,15 @@ RUN apt-get update && apt-get install -y \
     libx11-xcb1 \
     libxcb1 \
     libxcb-dri3-0 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxi6 \
-    libxtst6 \
-    libnss3 \
-    libxrandr2 \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libgbm1 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Chrome using modern method (no apt-key)
+# Install Node.js for execjs
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+
+# Install Chrome
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
@@ -50,21 +45,28 @@ RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+') \
 
 WORKDIR /app
 
+# Copy requirements first
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy all files
 COPY necap.py .
+COPY yidun_proxyless.py .
+COPY dun163.js .
+COPY net.pkl .
 COPY start.sh .
 
 RUN chmod +x start.sh
 
+# Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV HEADLESS=true
 ENV NUM_BROWSERS=2
 ENV MAX_THREADS=2
 ENV CHROME_BIN=/usr/bin/google-chrome
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
+ENV PORT=6000
 
 EXPOSE 6000
 
-CMD ["python", "necaptcha_solver.py"]
+CMD ["python", "necap.py"]
