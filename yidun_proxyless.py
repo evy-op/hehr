@@ -31,6 +31,24 @@ DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 USE_CUDA = True if torch.cuda.is_available() else False
 DEVICE = 'cuda' if USE_CUDA else 'cpu'
 
+# ============================================================
+#  SERVER CONFIGURATION
+# ============================================================
+TOKEN_SERVER_URL = os.environ.get('TOKEN_SERVER_URL', 'http://localhost:5050')
+TOKEN_SAVE_ENDPOINT = f"{TOKEN_SERVER_URL}/api/save-token"
+
+def send_token_to_server(token):
+    """Send token to server.py storage"""
+    try:
+        payload = {"token": token}
+        r = requests.post(TOKEN_SAVE_ENDPOINT, json=payload, timeout=5)
+        if r.status_code in [200, 201]:
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Server send error: {e}")
+        return False
+
 # ============ OPTIMIZED CONSTANTS ============
 if USE_CUDA:
     torch.backends.cudnn.benchmark = True
@@ -132,7 +150,7 @@ def get_sift_detector():
 
 # ============ CONSTANTS ============
 file_lock = threading.Lock()
-TOKEN_OUTPUT_FILE = os.path.join(DIR_PATH, 'validated_tokens.txt') # Added for local saving
+TOKEN_OUTPUT_FILE = os.path.join(DIR_PATH, 'validated_tokens.txt')
 
 # Configuration from bypasser-og.py
 REFERER = "https://mtacc.mobilelegends.com/"
@@ -143,11 +161,6 @@ DUN163_DOMAINS = [
     "https://c.dun.163.com",
     "https://c.dun.163yun.com"
 ]
-
-# ============ API CONFIG (REMOVED) ============
-# API_SUBMIT_URL = "http://10.63.197.72:5000/api/submit"
-# API_KEY = "BulletPH"
-# ====================================
 
 def rotate_about_center(src, angle, scale=1.):
     try:
@@ -174,7 +187,7 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
         sigmoid = lambda x: 1/(1+math.exp(-x))
         infos = []
         
-        for idx in range(min(len(anchors), 3)):  # Limit to max 3 anchors
+        for idx in range(min(len(anchors), 3)):
             try:
                 tensor_idx = 4 + idx * ceillen
                 if tensor_idx >= ypred.shape[3]:
@@ -197,7 +210,6 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
         infos = sorted(infos, key=lambda i: -i[3])
         
         def get_xyxy_clz_con_emergency(info):
-            """Emergency version that will not crash"""
             try:
                 gap = 416/ypred.shape[1]
                 x, y, idx, con = info
@@ -207,7 +219,6 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
                     
                 gp = idx * ceillen
                 
-                # Check tensor bounds before access
                 if (gp + 5 + len(class_types)) > ypred.shape[3]:
                     return None
                     
@@ -243,7 +254,6 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
                     
                 log_cons = np.transpose(log_cons, (0, 2, 1))
                 
-                # Safe class lookup
                 clz = 'unknown'
                 if clz_:
                     max_val = max(clz_)
@@ -312,7 +322,6 @@ class Mini(nn.Module):
         return self.model(x).permute(0, 2, 3, 1)
 
 def get_clz_rect_from_image(image_data, state):
-    """Emergency safe version"""
     try:
         if not state or 'net' not in state:
             return [], None
@@ -362,7 +371,6 @@ def get_clz_rect_from_image(image_data, state):
         return [], None
 
 def get_cut_img(npimg, rects):
-    """Emergency safe version"""
     ret = []
     try:
         for item in rects:
@@ -378,7 +386,6 @@ def get_cut_img(npimg, rects):
     return ret
 
 def get_flags_rects_from_image(image_data, state):
-    """EMERGENCY ULTRA-SAFE VERSION - Will never crash"""
     try:
         if state is None:
             return None, None, None
@@ -391,12 +398,10 @@ def get_flags_rects_from_image(image_data, state):
         
         height, width = s.shape[:2]
         
-        # Emergency safe slicing
         if height < 200 or width < 84:
             return None, None, None
             
         try:
-            # Safer slicing with bounds checking
             end_height = min(height, s.shape[0])
             a = s[160:end_height, 0:min(22, width), :]
             b = s[160:end_height, 28:min(50, width), :]
@@ -416,7 +421,6 @@ def get_flags_rects_from_image(image_data, state):
             return None, None, None
         
         def get_match_lens_emergency(i1, i2):
-            """Ultra-safe matching"""
             try:
                 if i1.size == 0 or i2.size == 0:
                     return 0
@@ -447,7 +451,6 @@ def get_flags_rects_from_image(image_data, state):
                 return 0
         
         def get_flag_rect_emergency(k12, cut_imgs, st):
-            """Ultra-safe flag rect detection"""
             try:
                 if len(k12) < 2:
                     return []
@@ -487,11 +490,9 @@ def get_flags_rects_from_image(image_data, state):
             if len(rs) < 3:
                 return None, None, None
             
-            # EMERGENCY RECT SELECTION - Will never crash
             r = []
             used_types = set()
             
-            # Select best from each type
             for target_type in [1, 2, 3]:
                 candidates = [x for x in rs if len(x) >= 3 and x[2] == target_type]
                 if candidates:
@@ -501,8 +502,6 @@ def get_flags_rects_from_image(image_data, state):
                     
             if len(r) >= 3:
                 r = sorted(r[:3], key=lambda x: x[2])
-                # if DEBUG:
-                #     logger.debug(f"Detected rects: {r}")
                 return r[0][1], r[1][1], r[2][1]
             else:
                 return None, None, None
@@ -692,7 +691,6 @@ class Dun163:
             return {}, 0.0
     
     def handle_click_captcha_hybrid(self, bg_url, token, attempt_num=0):
-        """EMERGENCY SAFE VERSION"""
         try:
             headers = {"User-Agent": self.request_params['ua']}
             
@@ -712,7 +710,6 @@ class Dun163:
             self._current_image_data = image_data
             self._current_rects = rects
             
-            # EMERGENCY SAFE RECT HANDLING
             rect1 = safe_list_access(rects, 0)
             rect2 = safe_list_access(rects, 1)
             rect3 = safe_list_access(rects, 2)
@@ -741,7 +738,6 @@ class Dun163:
                     self._current_click_points = click_points[:3]
                     return click_points[:3], img_time
             
-            # Emergency fallback
             click_points = self.generate_emergency_clicks()
             self._current_click_points = click_points
             return click_points, img_time
@@ -751,7 +747,6 @@ class Dun163:
             return self.generate_emergency_clicks(), 0.0
     
     def generate_emergency_clicks(self):
-        """Emergency click generator - Will never fail"""
         try:
             patterns = [
                 [(80, 70), (160, 120), (240, 90)],
@@ -776,16 +771,13 @@ class Dun163:
             
             return click_points
         except:
-            # Ultimate fallback
             return [{"x": 80, "y": 70}, {"x": 160, "y": 120}, {"x": 240, "y": 90}]
     
     def save_token_locally(self, validate_token):
-        """Saves the generated token to a local file, using the requested format."""
         try:
-            # Write only the token followed by a newline, removing all timestamps/thread info
             line = f"{validate_token}\n"
             
-            with file_lock: # Use the global lock to ensure thread-safe writing
+            with file_lock:
                 with open(TOKEN_OUTPUT_FILE, 'a') as f:
                     f.write(line)
             
@@ -793,9 +785,9 @@ class Dun163:
         except Exception as e:
             logger.error(f"T-{self.thread_id} | Local save error: {e}")
             return False
-    
-    def run(self, attempt_num=0):
-        """EMERGENCY SAFE VERSION"""
+
+    def run(self, attempt_num=0, use_server=True):
+        """Run the solver and send token to server.py"""
         try:
             get_conf_data = self.request_getconf()
             if not get_conf_data:
@@ -842,17 +834,21 @@ class Dun163:
                         pass
                 
                 if validate_decoded and len(validate_decoded.strip()) > 10:
-                    # Call the new local saving function
-                    local_success = self.save_token_locally(validate_decoded)
-                    
-                    if local_success:
-                        # Updated success log
-                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded} | Saved to {TOKEN_OUTPUT_FILE}')
+                    # ============================================================
+                    #  SEND TO SERVER.PY
+                    # ============================================================
+                    if use_server:
+                        success = send_token_to_server(validate_decoded)
+                        if success:
+                            logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Sent to server')
+                        else:
+                            self.save_token_locally(validate_decoded)
+                            logger.warning(f'T-{self.thread_id} Server offline, saved locally')
                     else:
-                        # Updated failure log
-                        logger.warning(f'T-{self.thread_id} | IMG:{img_time:.1f}s | JS:{js_time:.1f}s | Token:{validate_decoded} | Local save: FAILED')
-
-                    return True # We still return True because a token was generated
+                        self.save_token_locally(validate_decoded)
+                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally')
+                    
+                    return True
                 else:
                     logger.warning(f'T-{self.thread_id} | Verification OK but invalid token')
                     return True
@@ -860,11 +856,10 @@ class Dun163:
                 return False
                 
         except Exception as e:
-            logger.error(f'T-{self.thread_id} | Emergency: run() failed: {str(e)[:100]}')
+            logger.error(f'T-{self.thread_id} | run() failed: {str(e)[:100]}')
             return False
 
 def worker_thread(thread_id, config):
-    """EMERGENCY SAFE WORKER"""
     try:
         d = Dun163(
             id_=config['ID_'], 
@@ -882,7 +877,7 @@ def worker_thread(thread_id, config):
             attempt += 1
             try:
                 time.sleep(random.uniform(0.5, 1.0))
-                success = d.run(attempt_num=attempt)
+                success = d.run(attempt_num=attempt, use_server=True)
                 
                 if success:
                     success_count += 1
@@ -896,7 +891,7 @@ def worker_thread(thread_id, config):
         logger.error(f"T-{thread_id} | Worker failed: {e}")
 
 def main():
-    logger.info("噫 Starting Solver Script...")
+    logger.info("Starting CN31 Solver...")
     
     model_state = initialize_global_model()
     if not model_state:
@@ -911,7 +906,6 @@ def main():
     sift_detector = get_sift_detector()
     logger.success("All resources loaded")
     
-    # Single config using bypasser-og.py settings
     config = {
         'ID_': ID,
         'REFERER': REFERER,
@@ -922,17 +916,16 @@ def main():
     
     NUM_THREADS = 5
     
-    logger.info(f"櫨 Starting {NUM_THREADS} worker threads")
-    logger.info(f"投 ID: {ID}")
-    logger.info(f"投 REFERER: {REFERER}")
-    logger.info(f"投 OUTPUT FILE: {TOKEN_OUTPUT_FILE}") # Updated log line
+    logger.info(f"Starting {NUM_THREADS} worker threads")
+    logger.info(f"ID: {ID}")
+    logger.info(f"REFERER: {REFERER}")
+    logger.info(f"Server URL: {TOKEN_SERVER_URL}")
     logger.info("-" * 50)
     
     with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
         futures = []
         
         for i in range(NUM_THREADS):
-            # Create a copy with random UA for each thread
             thread_config = config.copy()
             thread_config['UA'] = UserAgent().random
             thread_config['DOMAIN'] = DUN163_DOMAINS[i % len(DUN163_DOMAINS)]
