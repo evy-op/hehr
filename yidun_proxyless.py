@@ -22,10 +22,15 @@ import threading
 from functools import lru_cache
 from fake_useragent import UserAgent
 
+# ============================================================
+#  SUPPRESS NNPACK WARNING
+# ============================================================
+os.environ['TORCH_NO_NNPACK'] = '1'
+
 warnings.filterwarnings("ignore", category=torch.serialization.SourceChangeWarning)
 warnings.filterwarnings("ignore", message=".*SIFT_create.*deprecated.*")
 
-DEBUG = False
+DEBUG = True  # Enable debug mode
 
 DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 USE_CUDA = True if torch.cuda.is_available() else False
@@ -101,7 +106,8 @@ def initialize_global_model():
             logger.success(f"Model loaded on {DEVICE}")
             return _model_state
             
-        except:
+        except Exception as e:
+            logger.error(f"Model load error: {e}")
             return None
 
 def get_global_model():
@@ -119,7 +125,8 @@ def get_compiled_js_cached(file_name):
             js_code = f.read()
         ctx = execjs.compile(js_code)
         return ctx
-    except:
+    except Exception as e:
+        logger.error(f"JS compile error: {e}")
         return None
 
 def get_compiled_js(file_name):
@@ -592,7 +599,8 @@ class Dun163:
             resp_json = self.get_jsonp(response.text)
             
             return resp_json.get('data', {})
-        except:
+        except Exception as e:
+            logger.error(f"getconf error: {e}")
             return {}
     
     def request_get(self, dt, bid, ac_token, ir_token=None):
@@ -640,7 +648,8 @@ class Dun163:
             resp_json = self.get_jsonp(resp_text)
             
             return resp_json.get('data', {})
-        except:
+        except Exception as e:
+            logger.error(f"request_get error: {e}")
             return {}
     
     def request_check(self, dt, bid, *, token, captcha_type=7, click_data=None):
@@ -683,7 +692,8 @@ class Dun163:
             resp_json = self.get_jsonp(resp.text)
             
             return resp_json.get('data', {}), js_time
-        except:
+        except Exception as e:
+            logger.error(f"request_check error: {e}")
             return {}, 0.0
     
     def handle_click_captcha_hybrid(self, bg_url, token, attempt_num=0):
@@ -698,6 +708,7 @@ class Dun163:
             
             state = get_global_model()
             if not state:
+                logger.warning("Model not loaded, using emergency clicks")
                 return self.generate_emergency_clicks(), 0.0
             
             rects = get_flags_rects_from_image(image_data, state)
@@ -781,10 +792,16 @@ class Dun163:
             return False
 
     def run(self, attempt_num=0):
-        """Run solver - saves locally AND sends to server"""
+        """Run solver - with full debug logging"""
+        logger.info(f"🔄 Attempt {attempt_num} started")
+        
         try:
+            # Step 1: Get config
             get_conf_data = self.request_getconf()
+            logger.info(f"📡 getconf response: {get_conf_data is not None}")
+            
             if not get_conf_data:
+                logger.warning("getconf failed")
                 return False
                 
             dt = get_conf_data.get('dt')
@@ -795,63 +812,75 @@ class Dun163:
             ir_data = get_conf_data.get('ir', {})
             ir_token = ir_data.get('token') if ir_data.get('enable') else None
             
+            # Step 2: Get captcha
             get_data = self.request_get(dt, bid, ac_token, ir_token)
+            logger.info(f"📡 get response: {get_data is not None}")
+            
             if not get_data:
+                logger.warning("get failed")
                 return False
                 
             captcha_type = get_data.get('type', 7)
             token = get_data.get('token')
             
             if not token:
+                logger.warning("No token in response")
                 return False
             
+            logger.info(f"🔑 Got token: {token[:30]}...")
+            
+            # Step 3: Handle captcha
             if captcha_type == 7:
                 bg_urls = get_data.get('bg', [])
                 if not bg_urls:
+                    logger.warning("No bg_urls")
                     return False
                     
                 click_points, img_time = self.handle_click_captcha_hybrid(bg_urls[0], token, attempt_num)
+                logger.info(f"🖱️ Click points: {click_points}")
+                
                 resp_json, js_time = self.request_check(dt, bid, token=token, captcha_type=7, click_data=click_points)
+                logger.info(f"✅ Check response result: {resp_json.get('result')}")
             else:
+                logger.warning(f"Unknown captcha type: {captcha_type}")
                 return False
             
             self.resp_json2 = resp_json
             
+            # Step 4: Check result
             if resp_json.get('result') == True:
                 validate_raw = resp_json.get('validate', '')
+                logger.info(f"🔐 Validate raw: {validate_raw[:30] if validate_raw else 'None'}...")
+                
                 validate_decoded = ""
                 
                 if validate_raw and self.ctx:
                     try:
                         validate_decoded = self.ctx.call('do_onVerify', validate_raw, self.fp)
-                    except:
-                        pass
+                        logger.info(f"✅ Decoded: {validate_decoded[:30] if validate_decoded else 'None'}...")
+                    except Exception as e:
+                        logger.error(f"JS decode error: {e}")
                 
                 if validate_decoded and len(validate_decoded.strip()) > 10:
-                    # ============================================================
-                    #  1. SAVE LOCALLY (for railway_yidun.py to read)
-                    # ============================================================
-                    self.save_token_locally(validate_decoded)
-                    
-                    # ============================================================
-                    #  2. ALSO SEND TO SERVER (for direct API access)
-                    # ============================================================
-                    server_success = send_token_to_server(validate_decoded)
-                    
-                    if server_success:
-                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally & sent to server')
+                    # Step 5: Send to server
+                    success = send_token_to_server(validate_decoded)
+                    if success:
+                        logger.success(f'✅ Token sent to server: {validate_decoded[:40]}...')
                     else:
-                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally only')
+                        logger.warning(f'❌ Failed to send to server')
                     
                     return True
                 else:
-                    logger.warning(f'T-{self.thread_id} | Verification OK but invalid token')
+                    logger.warning(f'Invalid token: {validate_decoded}')
                     return True
             else:
+                logger.warning(f"Verification failed")
                 return False
                 
         except Exception as e:
-            logger.error(f'T-{self.thread_id} | run() failed: {str(e)[:100]}')
+            logger.error(f'❌ run() failed: {str(e)}')
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
 def worker_thread(thread_id, config):
@@ -888,11 +917,13 @@ def worker_thread(thread_id, config):
 def main():
     logger.info("Starting CN31 Solver...")
     
+    # Load model
     model_state = initialize_global_model()
     if not model_state:
         logger.error("Model not available - cannot continue")
         return
         
+    # Load JS
     js_ctx = get_compiled_js('dun163.js')
     if not js_ctx:
         logger.error("JavaScript not available - cannot continue")
