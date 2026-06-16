@@ -770,8 +770,34 @@ class Dun163:
         except:
             return [{"x": 80, "y": 70}, {"x": 160, "y": 120}, {"x": 240, "y": 90}]
     
+    def save_token_locally(self, validate_token):
+        """Saves the generated token to local file"""
+        try:
+            line = f"{validate_token}\n"
+            
+            with file_lock:
+                with open(TOKEN_OUTPUT_FILE, 'a') as f:
+                    f.write(line)
+            
+            return True
+        except Exception as e:
+            logger.error(f"T-{self.thread_id} | Local save error: {e}")
+            return False
+    
+    def send_token_to_server(self, validate_token):
+        """Send token to server.py"""
+        try:
+            payload = {"token": validate_token}
+            r = requests.post("https://yidun-production.up.railway.app/api/save-token", json=payload, timeout=5)
+            if r.status_code in [200, 201]:
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"T-{self.thread_id} | Server send error: {e}")
+            return False
+
     def run(self, attempt_num=0):
-        """Run solver and send token to server.py"""
+        """Run solver - saves locally AND sends to server"""
         try:
             get_conf_data = self.request_getconf()
             if not get_conf_data:
@@ -819,13 +845,19 @@ class Dun163:
                 
                 if validate_decoded and len(validate_decoded.strip()) > 10:
                     # ============================================================
-                    #  SEND TO SERVER.PY VIA API - NO LOCAL FILE SAVING
+                    #  1. SAVE LOCALLY (for railway_yidun.py to read)
                     # ============================================================
-                    success = send_token_to_server(validate_decoded)
-                    if success:
-                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Sent to server')
+                    self.save_token_locally(validate_decoded)
+                    
+                    # ============================================================
+                    #  2. ALSO SEND TO SERVER (for direct API access)
+                    # ============================================================
+                    server_success = self.send_token_to_server(validate_decoded)
+                    
+                    if server_success:
+                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally & sent to server')
                     else:
-                        logger.warning(f'T-{self.thread_id} Server offline, token lost: {validate_decoded[:40]}...')
+                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally only')
                     
                     return True
                 else:
@@ -894,7 +926,7 @@ def main():
         'DOMAIN': DUN163_DOMAINS[0]
     }
     
-    NUM_THREADS = 5  # Default 5 threads
+    NUM_THREADS = 10  # Default 5 threads
     
     logger.info(f"Starting {NUM_THREADS} worker threads")
     logger.info(f"ID: {ID}")
