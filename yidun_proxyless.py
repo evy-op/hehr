@@ -32,7 +32,7 @@ USE_CUDA = True if torch.cuda.is_available() else False
 DEVICE = 'cuda' if USE_CUDA else 'cpu'
 
 # ============================================================
-#  SERVER CONFIGURATION - Send tokens to server.py
+#  SERVER CONFIGURATION
 # ============================================================
 TOKEN_SERVER_URL = os.environ.get('TOKEN_SERVER_URL', 'https://yidun-production.up.railway.app')
 TOKEN_SAVE_ENDPOINT = f"{TOKEN_SERVER_URL}/api/save-token"
@@ -56,11 +56,9 @@ if USE_CUDA:
 
 # ============ EMERGENCY ERROR HANDLER ============
 def emergency_fallback():
-    """Emergency fallback when all else fails"""
     return [(80, 70), (160, 120), (240, 90)]
 
 def safe_list_access(lst, index, default=None):
-    """Ultra-safe list access"""
     try:
         if lst is None or not isinstance(lst, (list, tuple)):
             return default
@@ -149,7 +147,9 @@ def get_sift_detector():
     return _sift_detector
 
 # ============ CONSTANTS ============
-# Configuration from bypasser-og.py
+file_lock = threading.Lock()
+TOKEN_OUTPUT_FILE = os.path.join(DIR_PATH, 'validated_tokens.txt')
+
 REFERER = "https://mtacc.mobilelegends.com/"
 ID = "fef5c67c39074e9d845f4bf579cc07af"
 FP_H = "mtacc.mobilelegends.com"
@@ -175,7 +175,6 @@ def rotate_about_center(src, angle, scale=1.):
         return src
 
 def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_threshold=0):
-    """EMERGENCY SAFE VERSION - Will not crash on index errors"""
     try:
         if not anchors or not class_types:
             return [] if islist else None
@@ -771,29 +770,14 @@ class Dun163:
             return [{"x": 80, "y": 70}, {"x": 160, "y": 120}, {"x": 240, "y": 90}]
     
     def save_token_locally(self, validate_token):
-        """Saves the generated token to local file"""
         try:
             line = f"{validate_token}\n"
-            
             with file_lock:
                 with open(TOKEN_OUTPUT_FILE, 'a') as f:
                     f.write(line)
-            
             return True
         except Exception as e:
             logger.error(f"T-{self.thread_id} | Local save error: {e}")
-            return False
-    
-    def send_token_to_server(self, validate_token):
-        """Send token to server.py"""
-        try:
-            payload = {"token": validate_token}
-            r = requests.post("https://yidun-production.up.railway.app/api/save-token", json=payload, timeout=5)
-            if r.status_code in [200, 201]:
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"T-{self.thread_id} | Server send error: {e}")
             return False
 
     def run(self, attempt_num=0):
@@ -852,7 +836,7 @@ class Dun163:
                     # ============================================================
                     #  2. ALSO SEND TO SERVER (for direct API access)
                     # ============================================================
-                    server_success = self.send_token_to_server(validate_decoded)
+                    server_success = send_token_to_server(validate_decoded)
                     
                     if server_success:
                         logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally & sent to server')
@@ -871,7 +855,6 @@ class Dun163:
             return False
 
 def worker_thread(thread_id, config):
-    """Worker thread - runs continuously"""
     try:
         d = Dun163(
             id_=config['ID_'], 
@@ -885,7 +868,7 @@ def worker_thread(thread_id, config):
         attempt = 0
         success_count = 0
         
-        while True:  # Runs forever until stopped
+        while True:
             attempt += 1
             try:
                 time.sleep(random.uniform(0.5, 1.0))
@@ -903,15 +886,13 @@ def worker_thread(thread_id, config):
         logger.error(f"T-{thread_id} | Worker failed: {e}")
 
 def main():
-    logger.info("Starting CN31 Solver - Continuous Mode...")
+    logger.info("Starting CN31 Solver...")
     
-    # Load model
     model_state = initialize_global_model()
     if not model_state:
         logger.error("Model not available - cannot continue")
         return
         
-    # Load JS
     js_ctx = get_compiled_js('dun163.js')
     if not js_ctx:
         logger.error("JavaScript not available - cannot continue")
@@ -920,7 +901,6 @@ def main():
     sift_detector = get_sift_detector()
     logger.success("All resources loaded")
     
-    # Setup config
     config = {
         'ID_': ID,
         'REFERER': REFERER,
@@ -929,42 +909,30 @@ def main():
         'DOMAIN': DUN163_DOMAINS[0]
     }
     
+    NUM_THREADS = 5
+    
+    logger.info(f"Starting {NUM_THREADS} worker threads")
     logger.info(f"ID: {ID}")
     logger.info(f"REFERER: {REFERER}")
     logger.info(f"Server URL: {TOKEN_SERVER_URL}")
     logger.info("-" * 50)
     
-    # Create solver instance
-    d = Dun163(
-        id_=config['ID_'],
-        referer=config['REFERER'],
-        fp_h=config['FP_H'],
-        ua=config['UA'],
-        thread_id=1,
-        domain=config['DOMAIN']
-    )
-    
-    attempt = 0
-    success_count = 0
-    
-    # Run forever
-    while True:
-        attempt += 1
+    with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+        futures = []
+        
+        for i in range(NUM_THREADS):
+            thread_config = config.copy()
+            thread_config['UA'] = UserAgent().random
+            thread_config['DOMAIN'] = DUN163_DOMAINS[i % len(DUN163_DOMAINS)]
+            future = executor.submit(worker_thread, i+1, thread_config)
+            futures.append(future)
+        
         try:
-            success = d.run(attempt_num=attempt)
-            
-            if success:
-                success_count += 1
-                logger.info(f"Attempt {attempt} | Success #{success_count}")
-            
-            time.sleep(random.uniform(0.5, 1.0))
-            
+            for future in futures:
+                future.result()
         except KeyboardInterrupt:
             logger.warning("Stopping...")
-            break
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            time.sleep(2)
+            executor.shutdown(wait=True)
 
 if __name__ == '__main__':
     main()
