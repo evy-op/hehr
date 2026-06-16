@@ -903,13 +903,15 @@ def worker_thread(thread_id, config):
         logger.error(f"T-{thread_id} | Worker failed: {e}")
 
 def main():
-    logger.info("Starting CN31 Solver...")
+    logger.info("Starting CN31 Solver - Continuous Mode...")
     
+    # Load model
     model_state = initialize_global_model()
     if not model_state:
         logger.error("Model not available - cannot continue")
         return
         
+    # Load JS
     js_ctx = get_compiled_js('dun163.js')
     if not js_ctx:
         logger.error("JavaScript not available - cannot continue")
@@ -918,6 +920,7 @@ def main():
     sift_detector = get_sift_detector()
     logger.success("All resources loaded")
     
+    # Setup config
     config = {
         'ID_': ID,
         'REFERER': REFERER,
@@ -926,30 +929,42 @@ def main():
         'DOMAIN': DUN163_DOMAINS[0]
     }
     
-    NUM_THREADS = 10  # Default 5 threads
-    
-    logger.info(f"Starting {NUM_THREADS} worker threads")
     logger.info(f"ID: {ID}")
     logger.info(f"REFERER: {REFERER}")
     logger.info(f"Server URL: {TOKEN_SERVER_URL}")
     logger.info("-" * 50)
     
-    with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-        futures = []
-        
-        for i in range(NUM_THREADS):
-            thread_config = config.copy()
-            thread_config['UA'] = UserAgent().random
-            thread_config['DOMAIN'] = DUN163_DOMAINS[i % len(DUN163_DOMAINS)]
-            future = executor.submit(worker_thread, i+1, thread_config)
-            futures.append(future)
-        
+    # Create solver instance
+    d = Dun163(
+        id_=config['ID_'],
+        referer=config['REFERER'],
+        fp_h=config['FP_H'],
+        ua=config['UA'],
+        thread_id=1,
+        domain=config['DOMAIN']
+    )
+    
+    attempt = 0
+    success_count = 0
+    
+    # Run forever
+    while True:
+        attempt += 1
         try:
-            for future in futures:
-                future.result()
+            success = d.run(attempt_num=attempt)
+            
+            if success:
+                success_count += 1
+                logger.info(f"Attempt {attempt} | Success #{success_count}")
+            
+            time.sleep(random.uniform(0.5, 1.0))
+            
         except KeyboardInterrupt:
             logger.warning("Stopping...")
-            executor.shutdown(wait=True)
+            break
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            time.sleep(2)
 
 if __name__ == '__main__':
     main()
