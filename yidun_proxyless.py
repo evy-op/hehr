@@ -22,36 +22,27 @@ import threading
 from functools import lru_cache
 from fake_useragent import UserAgent
 
-# ============================================================
-#  SUPPRESS NNPACK WARNING
-# ============================================================
-os.environ['TORCH_NO_NNPACK'] = '1'
-
 warnings.filterwarnings("ignore", category=torch.serialization.SourceChangeWarning)
 warnings.filterwarnings("ignore", message=".*SIFT_create.*deprecated.*")
 
-DEBUG = True  # Enable debug mode
+DEBUG = False
 
 DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 USE_CUDA = True if torch.cuda.is_available() else False
 DEVICE = 'cuda' if USE_CUDA else 'cpu'
 
 # ============================================================
-#  SERVER CONFIGURATION
+#  TOKEN SERVER API - ADDED
 # ============================================================
 TOKEN_SERVER_URL = os.environ.get('TOKEN_SERVER_URL', 'https://yidun-production.up.railway.app')
 TOKEN_SAVE_ENDPOINT = f"{TOKEN_SERVER_URL}/api/save-token"
 
 def send_token_to_server(token):
-    """Send token to server.py storage"""
     try:
         payload = {"token": token}
         r = requests.post(TOKEN_SAVE_ENDPOINT, json=payload, timeout=5)
-        if r.status_code in [200, 201]:
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Server send error: {e}")
+        return r.status_code in [200, 201]
+    except:
         return False
 
 # ============ OPTIMIZED CONSTANTS ============
@@ -61,9 +52,11 @@ if USE_CUDA:
 
 # ============ EMERGENCY ERROR HANDLER ============
 def emergency_fallback():
+    """Emergency fallback when all else fails"""
     return [(80, 70), (160, 120), (240, 90)]
 
 def safe_list_access(lst, index, default=None):
+    """Ultra-safe list access"""
     try:
         if lst is None or not isinstance(lst, (list, tuple)):
             return default
@@ -106,8 +99,7 @@ def initialize_global_model():
             logger.success(f"Model loaded on {DEVICE}")
             return _model_state
             
-        except Exception as e:
-            logger.error(f"Model load error: {e}")
+        except:
             return None
 
 def get_global_model():
@@ -125,8 +117,7 @@ def get_compiled_js_cached(file_name):
             js_code = f.read()
         ctx = execjs.compile(js_code)
         return ctx
-    except Exception as e:
-        logger.error(f"JS compile error: {e}")
+    except:
         return None
 
 def get_compiled_js(file_name):
@@ -155,8 +146,9 @@ def get_sift_detector():
 
 # ============ CONSTANTS ============
 file_lock = threading.Lock()
-TOKEN_OUTPUT_FILE = os.path.join(DIR_PATH, 'validated_tokens.txt')
+TOKEN_OUTPUT_FILE = os.path.join(DIR_PATH, 'validated_tokens.txt') # Added for local saving
 
+# Configuration from bypasser-og.py
 REFERER = "https://mtacc.mobilelegends.com/"
 ID = "fef5c67c39074e9d845f4bf579cc07af"
 FP_H = "mtacc.mobilelegends.com"
@@ -182,6 +174,7 @@ def rotate_about_center(src, angle, scale=1.):
         return src
 
 def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_threshold=0):
+    """EMERGENCY SAFE VERSION - Will not crash on index errors"""
     try:
         if not anchors or not class_types:
             return [] if islist else None
@@ -190,7 +183,7 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
         sigmoid = lambda x: 1/(1+math.exp(-x))
         infos = []
         
-        for idx in range(min(len(anchors), 3)):
+        for idx in range(min(len(anchors), 3)):  # Limit to max 3 anchors
             try:
                 tensor_idx = 4 + idx * ceillen
                 if tensor_idx >= ypred.shape[3]:
@@ -213,6 +206,7 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
         infos = sorted(infos, key=lambda i: -i[3])
         
         def get_xyxy_clz_con_emergency(info):
+            """Emergency version that will not crash"""
             try:
                 gap = 416/ypred.shape[1]
                 x, y, idx, con = info
@@ -222,6 +216,7 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
                     
                 gp = idx * ceillen
                 
+                # Check tensor bounds before access
                 if (gp + 5 + len(class_types)) > ypred.shape[3]:
                     return None
                     
@@ -257,6 +252,7 @@ def parse_y_pred(ypred, anchors, class_types, islist=False, threshold=0.2, nms_t
                     
                 log_cons = np.transpose(log_cons, (0, 2, 1))
                 
+                # Safe class lookup
                 clz = 'unknown'
                 if clz_:
                     max_val = max(clz_)
@@ -325,6 +321,7 @@ class Mini(nn.Module):
         return self.model(x).permute(0, 2, 3, 1)
 
 def get_clz_rect_from_image(image_data, state):
+    """Emergency safe version"""
     try:
         if not state or 'net' not in state:
             return [], None
@@ -374,6 +371,7 @@ def get_clz_rect_from_image(image_data, state):
         return [], None
 
 def get_cut_img(npimg, rects):
+    """Emergency safe version"""
     ret = []
     try:
         for item in rects:
@@ -389,6 +387,7 @@ def get_cut_img(npimg, rects):
     return ret
 
 def get_flags_rects_from_image(image_data, state):
+    """EMERGENCY ULTRA-SAFE VERSION - Will never crash"""
     try:
         if state is None:
             return None, None, None
@@ -401,10 +400,12 @@ def get_flags_rects_from_image(image_data, state):
         
         height, width = s.shape[:2]
         
+        # Emergency safe slicing
         if height < 200 or width < 84:
             return None, None, None
             
         try:
+            # Safer slicing with bounds checking
             end_height = min(height, s.shape[0])
             a = s[160:end_height, 0:min(22, width), :]
             b = s[160:end_height, 28:min(50, width), :]
@@ -424,6 +425,7 @@ def get_flags_rects_from_image(image_data, state):
             return None, None, None
         
         def get_match_lens_emergency(i1, i2):
+            """Ultra-safe matching"""
             try:
                 if i1.size == 0 or i2.size == 0:
                     return 0
@@ -454,6 +456,7 @@ def get_flags_rects_from_image(image_data, state):
                 return 0
         
         def get_flag_rect_emergency(k12, cut_imgs, st):
+            """Ultra-safe flag rect detection"""
             try:
                 if len(k12) < 2:
                     return []
@@ -493,9 +496,11 @@ def get_flags_rects_from_image(image_data, state):
             if len(rs) < 3:
                 return None, None, None
             
+            # EMERGENCY RECT SELECTION - Will never crash
             r = []
             used_types = set()
             
+            # Select best from each type
             for target_type in [1, 2, 3]:
                 candidates = [x for x in rs if len(x) >= 3 and x[2] == target_type]
                 if candidates:
@@ -505,6 +510,8 @@ def get_flags_rects_from_image(image_data, state):
                     
             if len(r) >= 3:
                 r = sorted(r[:3], key=lambda x: x[2])
+                # if DEBUG:
+                #     logger.debug(f"Detected rects: {r}")
                 return r[0][1], r[1][1], r[2][1]
             else:
                 return None, None, None
@@ -599,8 +606,7 @@ class Dun163:
             resp_json = self.get_jsonp(response.text)
             
             return resp_json.get('data', {})
-        except Exception as e:
-            logger.error(f"getconf error: {e}")
+        except:
             return {}
     
     def request_get(self, dt, bid, ac_token, ir_token=None):
@@ -648,8 +654,7 @@ class Dun163:
             resp_json = self.get_jsonp(resp_text)
             
             return resp_json.get('data', {})
-        except Exception as e:
-            logger.error(f"request_get error: {e}")
+        except:
             return {}
     
     def request_check(self, dt, bid, *, token, captcha_type=7, click_data=None):
@@ -692,11 +697,11 @@ class Dun163:
             resp_json = self.get_jsonp(resp.text)
             
             return resp_json.get('data', {}), js_time
-        except Exception as e:
-            logger.error(f"request_check error: {e}")
+        except:
             return {}, 0.0
     
     def handle_click_captcha_hybrid(self, bg_url, token, attempt_num=0):
+        """EMERGENCY SAFE VERSION"""
         try:
             headers = {"User-Agent": self.request_params['ua']}
             
@@ -708,7 +713,6 @@ class Dun163:
             
             state = get_global_model()
             if not state:
-                logger.warning("Model not loaded, using emergency clicks")
                 return self.generate_emergency_clicks(), 0.0
             
             rects = get_flags_rects_from_image(image_data, state)
@@ -717,6 +721,7 @@ class Dun163:
             self._current_image_data = image_data
             self._current_rects = rects
             
+            # EMERGENCY SAFE RECT HANDLING
             rect1 = safe_list_access(rects, 0)
             rect2 = safe_list_access(rects, 1)
             rect3 = safe_list_access(rects, 2)
@@ -745,6 +750,7 @@ class Dun163:
                     self._current_click_points = click_points[:3]
                     return click_points[:3], img_time
             
+            # Emergency fallback
             click_points = self.generate_emergency_clicks()
             self._current_click_points = click_points
             return click_points, img_time
@@ -754,6 +760,7 @@ class Dun163:
             return self.generate_emergency_clicks(), 0.0
     
     def generate_emergency_clicks(self):
+        """Emergency click generator - Will never fail"""
         try:
             patterns = [
                 [(80, 70), (160, 120), (240, 90)],
@@ -778,30 +785,29 @@ class Dun163:
             
             return click_points
         except:
+            # Ultimate fallback
             return [{"x": 80, "y": 70}, {"x": 160, "y": 120}, {"x": 240, "y": 90}]
     
     def save_token_locally(self, validate_token):
+        """Saves the generated token to a local file, using the requested format."""
         try:
+            # Write only the token followed by a newline, removing all timestamps/thread info
             line = f"{validate_token}\n"
-            with file_lock:
+            
+            with file_lock: # Use the global lock to ensure thread-safe writing
                 with open(TOKEN_OUTPUT_FILE, 'a') as f:
                     f.write(line)
+            
             return True
         except Exception as e:
             logger.error(f"T-{self.thread_id} | Local save error: {e}")
             return False
-
+    
     def run(self, attempt_num=0):
-        """Run solver - with full debug logging"""
-        logger.info(f"🔄 Attempt {attempt_num} started")
-        
+        """EMERGENCY SAFE VERSION"""
         try:
-            # Step 1: Get config
             get_conf_data = self.request_getconf()
-            logger.info(f"📡 getconf response: {get_conf_data is not None}")
-            
             if not get_conf_data:
-                logger.warning("getconf failed")
                 return False
                 
             dt = get_conf_data.get('dt')
@@ -812,78 +818,62 @@ class Dun163:
             ir_data = get_conf_data.get('ir', {})
             ir_token = ir_data.get('token') if ir_data.get('enable') else None
             
-            # Step 2: Get captcha
             get_data = self.request_get(dt, bid, ac_token, ir_token)
-            logger.info(f"📡 get response: {get_data is not None}")
-            
             if not get_data:
-                logger.warning("get failed")
                 return False
                 
             captcha_type = get_data.get('type', 7)
             token = get_data.get('token')
             
             if not token:
-                logger.warning("No token in response")
                 return False
             
-            logger.info(f"🔑 Got token: {token[:30]}...")
-            
-            # Step 3: Handle captcha
             if captcha_type == 7:
                 bg_urls = get_data.get('bg', [])
                 if not bg_urls:
-                    logger.warning("No bg_urls")
                     return False
                     
                 click_points, img_time = self.handle_click_captcha_hybrid(bg_urls[0], token, attempt_num)
-                logger.info(f"🖱️ Click points: {click_points}")
-                
                 resp_json, js_time = self.request_check(dt, bid, token=token, captcha_type=7, click_data=click_points)
-                logger.info(f"✅ Check response result: {resp_json.get('result')}")
             else:
-                logger.warning(f"Unknown captcha type: {captcha_type}")
                 return False
             
             self.resp_json2 = resp_json
             
-            # Step 4: Check result
             if resp_json.get('result') == True:
                 validate_raw = resp_json.get('validate', '')
-                logger.info(f"🔐 Validate raw: {validate_raw[:30] if validate_raw else 'None'}...")
-                
                 validate_decoded = ""
                 
                 if validate_raw and self.ctx:
                     try:
                         validate_decoded = self.ctx.call('do_onVerify', validate_raw, self.fp)
-                        logger.info(f"✅ Decoded: {validate_decoded[:30] if validate_decoded else 'None'}...")
-                    except Exception as e:
-                        logger.error(f"JS decode error: {e}")
+                    except:
+                        pass
                 
                 if validate_decoded and len(validate_decoded.strip()) > 10:
-                    # Step 5: Send to server
-                    success = send_token_to_server(validate_decoded)
-                    if success:
-                        logger.success(f'✅ Token sent to server: {validate_decoded[:40]}...')
+                    # ============================================================
+                    #  SEND TO SERVER (with fallback to local save)
+                    # ============================================================
+                    server_success = send_token_to_server(validate_decoded)
+                    if server_success:
+                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Sent to server')
                     else:
-                        logger.warning(f'❌ Failed to send to server')
+                        self.save_token_locally(validate_decoded)
+                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally')
                     
                     return True
                 else:
-                    logger.warning(f'Invalid token: {validate_decoded}')
+                    logger.warning(f'T-{self.thread_id} | Verification OK but invalid token')
                     return True
             else:
-                logger.warning(f"Verification failed")
                 return False
                 
         except Exception as e:
-            logger.error(f'❌ run() failed: {str(e)}')
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f'T-{self.thread_id} | Emergency: run() failed: {str(e)[:100]}')
             return False
 
 def worker_thread(thread_id, config):
+    """EMERGENCY SAFE WORKER"""
     try:
         d = Dun163(
             id_=config['ID_'], 
@@ -917,13 +907,11 @@ def worker_thread(thread_id, config):
 def main():
     logger.info("Starting CN31 Solver...")
     
-    # Load model
     model_state = initialize_global_model()
     if not model_state:
         logger.error("Model not available - cannot continue")
         return
         
-    # Load JS
     js_ctx = get_compiled_js('dun163.js')
     if not js_ctx:
         logger.error("JavaScript not available - cannot continue")
