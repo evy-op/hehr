@@ -1,7 +1,8 @@
 FROM python:3.11-slim-bullseye
 
-# Install system dependencies
+# Install system dependencies FIRST (including curl)
 RUN apt-get update && apt-get install -y \
+    curl \
     wget \
     gnupg \
     unzip \
@@ -24,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js for execjs
+# Install Node.js 18.x using the official script
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs
 
@@ -45,7 +46,7 @@ RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+') \
 
 WORKDIR /app
 
-# Copy requirements first
+# Copy requirements first for better caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
