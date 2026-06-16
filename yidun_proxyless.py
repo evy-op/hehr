@@ -32,9 +32,9 @@ USE_CUDA = True if torch.cuda.is_available() else False
 DEVICE = 'cuda' if USE_CUDA else 'cpu'
 
 # ============================================================
-#  SERVER CONFIGURATION
+#  SERVER CONFIGURATION - Send tokens to server.py
 # ============================================================
-TOKEN_SERVER_URL = os.environ.get('TOKEN_SERVER_URL', 'http://localhost:5050')
+TOKEN_SERVER_URL = os.environ.get('TOKEN_SERVER_URL', 'https://yidun-production.up.railway.app')
 TOKEN_SAVE_ENDPOINT = f"{TOKEN_SERVER_URL}/api/save-token"
 
 def send_token_to_server(token):
@@ -149,9 +149,6 @@ def get_sift_detector():
     return _sift_detector
 
 # ============ CONSTANTS ============
-file_lock = threading.Lock()
-TOKEN_OUTPUT_FILE = os.path.join(DIR_PATH, 'validated_tokens.txt')
-
 # Configuration from bypasser-og.py
 REFERER = "https://mtacc.mobilelegends.com/"
 ID = "fef5c67c39074e9d845f4bf579cc07af"
@@ -773,21 +770,8 @@ class Dun163:
         except:
             return [{"x": 80, "y": 70}, {"x": 160, "y": 120}, {"x": 240, "y": 90}]
     
-    def save_token_locally(self, validate_token):
-        try:
-            line = f"{validate_token}\n"
-            
-            with file_lock:
-                with open(TOKEN_OUTPUT_FILE, 'a') as f:
-                    f.write(line)
-            
-            return True
-        except Exception as e:
-            logger.error(f"T-{self.thread_id} | Local save error: {e}")
-            return False
-
-    def run(self, attempt_num=0, use_server=True):
-        """Run the solver and send token to server.py"""
+    def run(self, attempt_num=0):
+        """Run solver and send token to server.py"""
         try:
             get_conf_data = self.request_getconf()
             if not get_conf_data:
@@ -835,18 +819,13 @@ class Dun163:
                 
                 if validate_decoded and len(validate_decoded.strip()) > 10:
                     # ============================================================
-                    #  SEND TO SERVER.PY
+                    #  SEND TO SERVER.PY VIA API - NO LOCAL FILE SAVING
                     # ============================================================
-                    if use_server:
-                        success = send_token_to_server(validate_decoded)
-                        if success:
-                            logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Sent to server')
-                        else:
-                            self.save_token_locally(validate_decoded)
-                            logger.warning(f'T-{self.thread_id} Server offline, saved locally')
+                    success = send_token_to_server(validate_decoded)
+                    if success:
+                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Sent to server')
                     else:
-                        self.save_token_locally(validate_decoded)
-                        logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally')
+                        logger.warning(f'T-{self.thread_id} Server offline, token lost: {validate_decoded[:40]}...')
                     
                     return True
                 else:
@@ -860,6 +839,7 @@ class Dun163:
             return False
 
 def worker_thread(thread_id, config):
+    """Worker thread - runs continuously"""
     try:
         d = Dun163(
             id_=config['ID_'], 
@@ -873,11 +853,11 @@ def worker_thread(thread_id, config):
         attempt = 0
         success_count = 0
         
-        while True:
+        while True:  # Runs forever until stopped
             attempt += 1
             try:
                 time.sleep(random.uniform(0.5, 1.0))
-                success = d.run(attempt_num=attempt, use_server=True)
+                success = d.run(attempt_num=attempt)
                 
                 if success:
                     success_count += 1
@@ -914,7 +894,7 @@ def main():
         'DOMAIN': DUN163_DOMAINS[0]
     }
     
-    NUM_THREADS = 5
+    NUM_THREADS = 5  # Default 5 threads
     
     logger.info(f"Starting {NUM_THREADS} worker threads")
     logger.info(f"ID: {ID}")
