@@ -701,7 +701,6 @@ class Dun163:
             return {}, 0.0
     
     def handle_click_captcha_hybrid(self, bg_url, token, attempt_num=0):
-        """EMERGENCY SAFE VERSION"""
         try:
             headers = {"User-Agent": self.request_params['ua']}
             
@@ -721,7 +720,6 @@ class Dun163:
             self._current_image_data = image_data
             self._current_rects = rects
             
-            # EMERGENCY SAFE RECT HANDLING
             rect1 = safe_list_access(rects, 0)
             rect2 = safe_list_access(rects, 1)
             rect3 = safe_list_access(rects, 2)
@@ -750,7 +748,6 @@ class Dun163:
                     self._current_click_points = click_points[:3]
                     return click_points[:3], img_time
             
-            # Emergency fallback
             click_points = self.generate_emergency_clicks()
             self._current_click_points = click_points
             return click_points, img_time
@@ -760,7 +757,6 @@ class Dun163:
             return self.generate_emergency_clicks(), 0.0
     
     def generate_emergency_clicks(self):
-        """Emergency click generator - Will never fail"""
         try:
             patterns = [
                 [(80, 70), (160, 120), (240, 90)],
@@ -785,34 +781,33 @@ class Dun163:
             
             return click_points
         except:
-            # Ultimate fallback
             return [{"x": 80, "y": 70}, {"x": 160, "y": 120}, {"x": 240, "y": 90}]
     
     def save_token_locally(self, validate_token):
-        """Saves the generated token to a local file, using the requested format."""
         try:
-            # Write only the token followed by a newline, removing all timestamps/thread info
             line = f"{validate_token}\n"
-            
-            with file_lock: # Use the global lock to ensure thread-safe writing
+            with file_lock:
                 with open(TOKEN_OUTPUT_FILE, 'a') as f:
                     f.write(line)
-            
             return True
         except Exception as e:
             logger.error(f"T-{self.thread_id} | Local save error: {e}")
             return False
 
     # ============================================================
-    #  FIXED RUN METHOD - With better error handling and logging
+    #  FIXED RUN METHOD - Recreates session on failures
     # ============================================================
     def run(self, attempt_num=0):
-        """Fixed run method with exponential backoff and better error handling"""
+        """Fixed run method - recreates session on failures"""
         try:
-            # Step 1: Get config
+            # Recreate session every 5 attempts to avoid stale sessions
+            if attempt_num > 0 and attempt_num % 5 == 0:
+                logger.info(f"T-{self.thread_id} | Refreshing session...")
+                self.ss = self.set_session()
+                self.ctx = get_compiled_js('dun163.js')
+            
             get_conf_data = self.request_getconf()
             if not get_conf_data:
-                logger.warning(f"T-{self.thread_id} | getconf failed")
                 return False
                 
             dt = get_conf_data.get('dt')
@@ -823,35 +818,28 @@ class Dun163:
             ir_data = get_conf_data.get('ir', {})
             ir_token = ir_data.get('token') if ir_data.get('enable') else None
             
-            # Step 2: Get captcha
             get_data = self.request_get(dt, bid, ac_token, ir_token)
             if not get_data:
-                logger.warning(f"T-{self.thread_id} | get failed")
                 return False
                 
             captcha_type = get_data.get('type', 7)
             token = get_data.get('token')
             
             if not token:
-                logger.warning(f"T-{self.thread_id} | No token in response")
                 return False
             
-            # Step 3: Handle captcha based on type
             if captcha_type == 7:
                 bg_urls = get_data.get('bg', [])
                 if not bg_urls:
-                    logger.warning(f"T-{self.thread_id} | No bg_urls")
                     return False
                     
                 click_points, img_time = self.handle_click_captcha_hybrid(bg_urls[0], token, attempt_num)
                 resp_json, js_time = self.request_check(dt, bid, token=token, captcha_type=7, click_data=click_points)
             else:
-                logger.warning(f"T-{self.thread_id} | Unknown captcha type: {captcha_type}")
                 return False
             
             self.resp_json2 = resp_json
             
-            # Step 4: Check result
             if resp_json.get('result') == True:
                 validate_raw = resp_json.get('validate', '')
                 validate_decoded = ""
@@ -864,26 +852,30 @@ class Dun163:
                         return False
                 
                 if validate_decoded and len(validate_decoded.strip()) > 10:
-                    # Step 5: Send to server
                     server_success = send_token_to_server(validate_decoded)
                     if server_success:
                         logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Sent to server')
                     else:
                         self.save_token_locally(validate_decoded)
                         logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Saved locally')
-                    
                     return True
                 else:
                     logger.warning(f'T-{self.thread_id} | Invalid token: {validate_decoded}')
                     return True
             else:
-                # Log why verification failed
+                # If verification fails, reset session
                 error_msg = resp_json.get('msg', 'Unknown error')
-                logger.warning(f'T-{self.thread_id} | Verification failed: {error_msg}')
+                logger.warning(f'T-{self.thread_id} | Verification failed: {error_msg}, resetting session...')
+                self.ss = self.set_session()
                 return False
                 
         except Exception as e:
             logger.error(f'T-{self.thread_id} | run() failed: {str(e)[:100]}')
+            # Reset session on any error
+            try:
+                self.ss = self.set_session()
+            except:
+                pass
             return False
 
 def worker_thread(thread_id, config):
@@ -977,7 +969,7 @@ def main():
         'DOMAIN': DUN163_DOMAINS[0]
     }
     
-    NUM_THREADS = 3  # Reduced from 5 to be more stable
+    NUM_THREADS = 3# Reduced from 5 to be more stable
     
     logger.info(f"Starting {NUM_THREADS} worker threads")
     logger.info(f"ID: {ID}")
