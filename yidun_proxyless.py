@@ -873,36 +873,43 @@ class Dun163:
             return False
 
 def worker_thread(thread_id, config):
-    """EMERGENCY SAFE WORKER"""
-    try:
-        d = Dun163(
-            id_=config['ID_'], 
-            referer=config['REFERER'], 
-            fp_h=config['FP_H'], 
-            ua=config['UA'], 
-            thread_id=thread_id, 
-            domain=config['DOMAIN']
-        )
-        
-        attempt = 0
-        success_count = 0
-        
-        while True:
-            attempt += 1
-            try:
-                time.sleep(random.uniform(0.5, 1.0))
-                success = d.run(attempt_num=attempt)
-                
-                if success:
-                    success_count += 1
-                    logger.info(f"T-{thread_id} | Attempt {attempt} | Success #{success_count}")
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                logger.error(f"T-{thread_id} | Error: {str(e)[:100]}")
-
-    except Exception as e:
-        logger.error(f"T-{thread_id} | Worker failed: {e}")
+    """Worker thread - with auto-restart on failure"""
+    while True:  # Keep restarting on failure
+        try:
+            d = Dun163(
+                id_=config['ID_'], 
+                referer=config['REFERER'], 
+                fp_h=config['FP_H'], 
+                ua=config['UA'], 
+                thread_id=thread_id, 
+                domain=config['DOMAIN']
+            )
+            
+            attempt = 0
+            success_count = 0
+            
+            while True:
+                attempt += 1
+                try:
+                    time.sleep(random.uniform(0.5, 1.0))
+                    success = d.run(attempt_num=attempt)
+                    
+                    if success:
+                        success_count += 1
+                        logger.info(f"T-{thread_id} | Attempt {attempt} | Success #{success_count}")
+                    else:
+                        logger.warning(f"T-{thread_id} | Attempt {attempt} | Failed")
+                        
+                except Exception as e:
+                    logger.error(f"T-{thread_id} | Run error: {e}")
+                    time.sleep(2)
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"T-{thread_id} | Worker crashed: {e}")
+            logger.info(f"T-{thread_id} | Restarting worker in 5 seconds...")
+            time.sleep(5)
+            continue
 
 def main():
     logger.info("Starting CN31 Solver...")
@@ -936,22 +943,31 @@ def main():
     logger.info(f"Server URL: {TOKEN_SERVER_URL}")
     logger.info("-" * 50)
     
-    with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-        futures = []
-        
-        for i in range(NUM_THREADS):
-            thread_config = config.copy()
-            thread_config['UA'] = UserAgent().random
-            thread_config['DOMAIN'] = DUN163_DOMAINS[i % len(DUN163_DOMAINS)]
-            future = executor.submit(worker_thread, i+1, thread_config)
-            futures.append(future)
-        
+    # Keep restarting workers
+    while True:
         try:
-            for future in futures:
-                future.result()
-        except KeyboardInterrupt:
-            logger.warning("Stopping...")
-            executor.shutdown(wait=True)
+            with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+                futures = []
+                
+                for i in range(NUM_THREADS):
+                    thread_config = config.copy()
+                    thread_config['UA'] = UserAgent().random
+                    thread_config['DOMAIN'] = DUN163_DOMAINS[i % len(DUN163_DOMAINS)]
+                    future = executor.submit(worker_thread, i+1, thread_config)
+                    futures.append(future)
+                
+                try:
+                    for future in futures:
+                        future.result()
+                except KeyboardInterrupt:
+                    logger.warning("Stopping...")
+                    executor.shutdown(wait=True)
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Main loop crashed: {e}")
+            logger.info("Restarting in 10 seconds...")
+            time.sleep(10)
 
 if __name__ == '__main__':
     main()
