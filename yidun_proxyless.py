@@ -802,12 +802,17 @@ class Dun163:
         except Exception as e:
             logger.error(f"T-{self.thread_id} | Local save error: {e}")
             return False
-    
+
+    # ============================================================
+    #  FIXED RUN METHOD - With better error handling and logging
+    # ============================================================
     def run(self, attempt_num=0):
-        """EMERGENCY SAFE VERSION"""
+        """Fixed run method with exponential backoff and better error handling"""
         try:
+            # Step 1: Get config
             get_conf_data = self.request_getconf()
             if not get_conf_data:
+                logger.warning(f"T-{self.thread_id} | getconf failed")
                 return False
                 
             dt = get_conf_data.get('dt')
@@ -818,28 +823,35 @@ class Dun163:
             ir_data = get_conf_data.get('ir', {})
             ir_token = ir_data.get('token') if ir_data.get('enable') else None
             
+            # Step 2: Get captcha
             get_data = self.request_get(dt, bid, ac_token, ir_token)
             if not get_data:
+                logger.warning(f"T-{self.thread_id} | get failed")
                 return False
                 
             captcha_type = get_data.get('type', 7)
             token = get_data.get('token')
             
             if not token:
+                logger.warning(f"T-{self.thread_id} | No token in response")
                 return False
             
+            # Step 3: Handle captcha based on type
             if captcha_type == 7:
                 bg_urls = get_data.get('bg', [])
                 if not bg_urls:
+                    logger.warning(f"T-{self.thread_id} | No bg_urls")
                     return False
                     
                 click_points, img_time = self.handle_click_captcha_hybrid(bg_urls[0], token, attempt_num)
                 resp_json, js_time = self.request_check(dt, bid, token=token, captcha_type=7, click_data=click_points)
             else:
+                logger.warning(f"T-{self.thread_id} | Unknown captcha type: {captcha_type}")
                 return False
             
             self.resp_json2 = resp_json
             
+            # Step 4: Check result
             if resp_json.get('result') == True:
                 validate_raw = resp_json.get('validate', '')
                 validate_decoded = ""
@@ -847,13 +859,12 @@ class Dun163:
                 if validate_raw and self.ctx:
                     try:
                         validate_decoded = self.ctx.call('do_onVerify', validate_raw, self.fp)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.error(f"T-{self.thread_id} | JS decode error: {e}")
+                        return False
                 
                 if validate_decoded and len(validate_decoded.strip()) > 10:
-                    # ============================================================
-                    #  SEND TO SERVER (with fallback to local save)
-                    # ============================================================
+                    # Step 5: Send to server
                     server_success = send_token_to_server(validate_decoded)
                     if server_success:
                         logger.success(f'T-{self.thread_id} SUCCESS: {validate_decoded[:40]}... | Sent to server')
@@ -863,18 +874,23 @@ class Dun163:
                     
                     return True
                 else:
-                    logger.warning(f'T-{self.thread_id} | Verification OK but invalid token')
+                    logger.warning(f'T-{self.thread_id} | Invalid token: {validate_decoded}')
                     return True
             else:
+                # Log why verification failed
+                error_msg = resp_json.get('msg', 'Unknown error')
+                logger.warning(f'T-{self.thread_id} | Verification failed: {error_msg}')
                 return False
                 
         except Exception as e:
-            logger.error(f'T-{self.thread_id} | Emergency: run() failed: {str(e)[:100]}')
+            logger.error(f'T-{self.thread_id} | run() failed: {str(e)[:100]}')
             return False
 
 def worker_thread(thread_id, config):
-    """Worker thread - with auto-restart on failure"""
-    while True:  # Keep restarting on failure
+    """Worker thread with exponential backoff on failure"""
+    backoff = 1  # Start with 1 second delay
+    
+    while True:
         try:
             d = Dun163(
                 id_=config['ID_'], 
@@ -887,28 +903,41 @@ def worker_thread(thread_id, config):
             
             attempt = 0
             success_count = 0
+            consecutive_failures = 0
             
             while True:
                 attempt += 1
                 try:
-                    time.sleep(random.uniform(0.5, 1.0))
+                    # Add random delay between attempts (0.5 - 2 seconds)
+                    time.sleep(random.uniform(1.0, 3.0))
+                    
                     success = d.run(attempt_num=attempt)
                     
                     if success:
                         success_count += 1
+                        consecutive_failures = 0
+                        backoff = 1  # Reset backoff on success
                         logger.info(f"T-{thread_id} | Attempt {attempt} | Success #{success_count}")
                     else:
-                        logger.warning(f"T-{thread_id} | Attempt {attempt} | Failed")
+                        consecutive_failures += 1
+                        logger.warning(f"T-{thread_id} | Attempt {attempt} | Failed ({consecutive_failures} in a row)")
+                        
+                        # Exponential backoff on failures
+                        if consecutive_failures > 3:
+                            wait_time = min(backoff * 2, 30)  # Max 30 seconds
+                            logger.info(f"T-{thread_id} | Backing off for {wait_time}s")
+                            time.sleep(wait_time)
+                            backoff = wait_time
                         
                 except Exception as e:
                     logger.error(f"T-{thread_id} | Run error: {e}")
-                    time.sleep(2)
+                    time.sleep(5)
                     continue
                     
         except Exception as e:
             logger.error(f"T-{thread_id} | Worker crashed: {e}")
-            logger.info(f"T-{thread_id} | Restarting worker in 5 seconds...")
-            time.sleep(5)
+            logger.info(f"T-{thread_id} | Restarting worker in 10 seconds...")
+            time.sleep(10)
             continue
 
 def main():
@@ -935,7 +964,7 @@ def main():
         'DOMAIN': DUN163_DOMAINS[0]
     }
     
-    NUM_THREADS = 5
+    NUM_THREADS = 3
     
     logger.info(f"Starting {NUM_THREADS} worker threads")
     logger.info(f"ID: {ID}")
