@@ -886,66 +886,71 @@ class Dun163:
             logger.error(f'T-{self.thread_id} | run() failed: {str(e)[:100]}')
             return False
 
-def main():
-    logger.info("Starting CN31 Solver...")
+def worker_thread(thread_id, config):
+    """Worker thread - keeps running forever, auto-restarts on failure"""
     
-    # Load model
-    model_state = initialize_global_model()
-    if not model_state:
-        logger.error("Model not available - cannot continue")
-        return
-        
-    # Load JS
-    js_ctx = get_compiled_js('dun163.js')
-    if not js_ctx:
-        logger.error("JavaScript not available - cannot continue")
-        return
-    
-    sift_detector = get_sift_detector()
-    logger.success("All resources loaded")
-    
-    config = {
-        'ID_': ID,
-        'REFERER': REFERER,
-        'FP_H': FP_H,
-        'UA': UserAgent().random,
-        'DOMAIN': DUN163_DOMAINS[0]
-    }
-    
-    NUM_THREADS = 3  # Reduced from 5 to be more stable
-    
-    logger.info(f"Starting {NUM_THREADS} worker threads")
-    logger.info(f"ID: {ID}")
-    logger.info(f"REFERER: {REFERER}")
-    logger.info(f"Server URL: {TOKEN_SERVER_URL}")
-    logger.info("-" * 50)
-    
-    # Keep the main loop alive forever
-    while True:
+    while True:  # Outer loop - keeps thread alive forever
         try:
-            with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-                futures = []
-                
-                for i in range(NUM_THREADS):
-                    thread_config = config.copy()
-                    thread_config['UA'] = UserAgent().random
-                    thread_config['DOMAIN'] = DUN163_DOMAINS[i % len(DUN163_DOMAINS)]
-                    future = executor.submit(worker_thread, i+1, thread_config)
-                    futures.append(future)
-                
-                # Wait for threads (they should never finish)
-                for future in futures:
-                    future.result()
-                    
-        except KeyboardInterrupt:
-            logger.warning("Stopping...")
-            executor.shutdown(wait=True)
-            break
+            logger.info(f"T-{thread_id} | Creating new solver instance...")
             
+            d = Dun163(
+                id_=config['ID_'], 
+                referer=config['REFERER'], 
+                fp_h=config['FP_H'], 
+                ua=config['UA'], 
+                thread_id=thread_id, 
+                domain=config['DOMAIN']
+            )
+            
+            attempt = 0
+            success_count = 0
+            consecutive_failures = 0
+            
+            while True:  # Inner loop - attempts to solve
+                attempt += 1
+                
+                # If too many failures, re-create the solver
+                if consecutive_failures > 10:
+                    logger.warning(f"T-{thread_id} | Too many failures ({consecutive_failures}), recreating solver...")
+                    break  # Break inner loop, outer loop will recreate
+                
+                try:
+                    # Random delay to avoid rate limiting
+                    time.sleep(random.uniform(1.0, 3.0))
+                    
+                    success = d.run(attempt_num=attempt)
+                    
+                    if success:
+                        success_count += 1
+                        consecutive_failures = 0
+                        logger.info(f"T-{thread_id} | Attempt {attempt} | Success #{success_count}")
+                        
+                        # Short delay after success to be nice
+                        time.sleep(random.uniform(0.5, 1.0))
+                    else:
+                        consecutive_failures += 1
+                        logger.warning(f"T-{thread_id} | Attempt {attempt} | Failed ({consecutive_failures} in a row)")
+                        
+                        # Exponential backoff
+                        if consecutive_failures > 5:
+                            wait_time = min(consecutive_failures * 2, 30)
+                            logger.info(f"T-{thread_id} | Backing off for {wait_time}s")
+                            time.sleep(wait_time)
+                        
+                except Exception as e:
+                    logger.error(f"T-{thread_id} | Run error: {e}")
+                    consecutive_failures += 1
+                    time.sleep(5)
+                    
+            # Inner loop broke, recreate solver
+            logger.info(f"T-{thread_id} | Recreating solver...")
+            continue
+                    
         except Exception as e:
-            logger.error(f"Main loop crashed: {e}")
-            logger.info("Restarting main loop in 10 seconds...")
+            logger.error(f"T-{thread_id} | Worker crashed: {e}")
+            logger.info(f"T-{thread_id} | Restarting in 10 seconds...")
             time.sleep(10)
+            continue  # Restart from outer loop
 def main():
     logger.info("Starting CN31 Solver...")
     
